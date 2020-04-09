@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,10 +13,14 @@ import (
 	"github.com/juju/ratelimit"
 	"github.com/mitchellh/mapstructure"
 	revents "github.com/rancher/event-subscriber/events"
-	"github.com/rancher/go-rancher/v2"
+	client "github.com/rancher/go-rancher/v2"
 	"github.com/rancher/log"
 	"github.com/rancher/rancher-metadata/config"
 	"github.com/rancher/rancher-metadata/pkg/kicker"
+)
+
+const (
+	defaultSubscriberWorkerCount = 15
 )
 
 type ReloadFunc func(versions config.Versions, creds []config.Credential, version string)
@@ -34,6 +39,14 @@ type Subscriber struct {
 	reloadInterval       int64
 	limiter              *ratelimit.Bucket
 	stopCh               chan struct{}
+}
+
+func getSubscriberWorkerCount() int {
+	worker, err := strconv.Atoi(os.Getenv("RANCHER_SUBSCRIBER_WORKER_COUNT"))
+	if err != nil || worker <= 0 {
+		return defaultSubscriberWorkerCount
+	}
+	return worker
 }
 
 func formatUrl(url string) string {
@@ -87,7 +100,9 @@ func (s *Subscriber) Subscribe() error {
 		"config.update": s.configUpdate,
 	}
 
-	router, err := revents.NewEventRouter("", 0, s.url, s.accessKey, s.secretKey, nil, handlers, "", 3, revents.DefaultPingConfig)
+	workerCount := getSubscriberWorkerCount()
+
+	router, err := revents.NewEventRouter("", 0, s.url, s.accessKey, s.secretKey, nil, handlers, "", workerCount, revents.DefaultPingConfig)
 	if err != nil {
 		return err
 	}
@@ -95,7 +110,7 @@ func (s *Subscriber) Subscribe() error {
 	s.router = router
 
 	go func() {
-		sp := revents.SkippingWorkerPool(3, nil)
+		sp := revents.SkippingWorkerPool(workerCount, nil)
 		for {
 			s.kicker.Kick()
 			if err := s.router.RunWithWorkerPool(sp); err != nil {
