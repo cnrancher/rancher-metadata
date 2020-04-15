@@ -177,8 +177,17 @@ func (s *Subscriber) configUpdate(event *revents.Event, c *client.RancherClient)
 }
 
 func (s *Subscriber) downloadAndReload() error {
+	// check if the websocket conn is connecting
+	if s.router.GetWebSocketConn() == nil || s.router.GetWebSocketConn().LocalAddr() == nil {
+		log.Info("Skipping to download metadata due to the websocket conn closed")
+		return nil
+	}
 	s.limiter.WaitMaxDuration(1, time.Duration(s.reloadInterval)*time.Millisecond)
 	log.Infof("Downloading metadata")
+	if s.GetRequestedVersion() == "" {
+		log.Infof("Skipping to request metadata due to the invalid version: %s", s.GetRequestedVersion())
+		return nil
+	}
 	url := s.url + "/configcontent/metadata-answers?client=v2&requestedVersion=" + s.GetRequestedVersion()
 	// 1. Download meta
 	req, err := http.NewRequest("GET", url, nil)
@@ -195,8 +204,12 @@ func (s *Subscriber) downloadAndReload() error {
 	log.Infof("Downloaded in %s", time.Since(start))
 
 	if resp.StatusCode != 200 {
+		if resp.StatusCode == 404 {
+			log.Infof("URL: %s, skip to decode the content due to the 404 response", url)
+			return nil
+		}
 		content, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("non-200 response %d: %s", resp.StatusCode, content)
+		return fmt.Errorf("URL: %s, non-200 response %d: %s", url, resp.StatusCode, content)
 	}
 
 	// 2. Decode the delta
